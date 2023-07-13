@@ -26,7 +26,7 @@
 #define INDEX_HTML_PATH "/spiffs/index.html"
 
 // OTA
-#define OTA_URI_JSON "https://github.com/EmanueleFeola/rpc_ModuleB/raw/master/project-name.bin"
+#define OTA_URI_JSON "https://raw.githubusercontent.com/EmanueleFeola/espidf_examples/main/ota_folder/ota_fw_version.json"
 //#define OTA_URI_BIN "https://github.com/EmanueleFeola/rpc_ModuleB/raw/master/project-name.bin"
 #define OTA_SERVER_ROOT_CA "-----BEGIN CERTIFICATE-----\n"\
     "MIIDrzCCApegAwIBAgIQCDvgVpBCRrGhdWrJWZHHSjANBgkqhkiG9w0BAQUFADBh\n"\
