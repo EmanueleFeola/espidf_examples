@@ -1,3 +1,7 @@
 build/
 .vscode/
 .devcontainer/
+/.metadata/
+.project
+.cproject
+esp32_gateway/.settings/org.eclipse.core.resources.prefs

@@ -23,101 +23,39 @@
 #include "esp_sleep.h"
 #include "esp_https_ota.h"
 #include "esp_spiffs.h"
-#include "config.h"
+#include "cJSON.h"
+#include "defines.h"
 
 static int retry_cnt = 0;
 
 bool conn_flag_on = false;
+bool connection_ok = false;
 bool wifi_status = false;
 bool mqtt_connected = false;
 TaskHandle_t publisher_task_handle = NULL;
 esp_mqtt_client_handle_t client = NULL;
 
 char index_html[4096];
-char rcv_buffer[200];
+char rcv_buffer[1000];
 
-// esp_http_client event handler
-esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
-
-	switch (evt->event_id) {
-	case HTTP_EVENT_ERROR:
-		break;
-	case HTTP_EVENT_ON_CONNECTED:
-		break;
-	case HTTP_EVENT_HEADER_SENT:
-		break;
-	case HTTP_EVENT_ON_HEADER:
-		break;
-	case HTTP_EVENT_ON_DATA:
-		if (!esp_http_client_is_chunked_response(evt->client)) {
-			strncpy(rcv_buffer, (char*) evt->data, evt->data_len);
-		}
-		break;
-	case HTTP_EVENT_ON_FINISH:
-		break;
-	case HTTP_EVENT_DISCONNECTED:
-		break;
-	}
-	return ESP_OK;
-}
-
-static void initi_web_page_buffer(void) {
-	esp_vfs_spiffs_conf_t conf = { .base_path = "/spiffs", .partition_label =
-	NULL, .max_files = 5, .format_if_mount_failed = true };
-
-	ESP_ERROR_CHECK(esp_vfs_spiffs_register(&conf));
-
-	memset((void*) index_html, 0, sizeof(index_html));
-	struct stat st;
-	if (stat(INDEX_HTML_PATH, &st)) {
-		ESP_LOGE(TAG, "index.html not found");
-		return;
-	}
-
-	FILE *fp = fopen(INDEX_HTML_PATH, "r");
-	if (fread(index_html, st.st_size, 1, fp) == 0) {
-		ESP_LOGE(TAG, "fread failed");
-	}
-
-	printf("html page:\n");
-	printf("%s\n", index_html);
-
-	fclose(fp);
-}
-
-unsigned long millis() {
-	return (unsigned long) (esp_timer_get_time() / 1000ULL);
-}
-
-void start_ota_update(char *ota_uri_bin) {
-	esp_http_client_config_t config = { .url = ota_uri_bin, .cert_pem =
-			(char*) OTA_SERVER_ROOT_CA, .skip_cert_common_name_check = false };
-	esp_https_ota_config_t ota_config = { .http_config = &config, };
-
-	esp_err_t ret = esp_https_ota(&ota_config);
-	if (ret == ESP_OK) {
-		printf("OTA OK, restarting...\n");
-		esp_restart();
-	} else {
-		printf("OTA failed...\n");
-	}
-}
-
+/// WIFI
 static esp_err_t wifi_event_handler(void *arg, esp_event_base_t event_base,
 		int32_t event_id, void *event_data) {
 	switch (event_id) {
 	case WIFI_EVENT_STA_START:
 		esp_wifi_connect();
-		ESP_LOGI(TAG, "Trying to connect with Wi-Fi\n");
+		ESP_LOGI(TAG, "Trying to connect with Wi-Fi");
 		break;
 
 	case WIFI_EVENT_STA_CONNECTED:
-		ESP_LOGI(TAG, "Wi-Fi connected\n");
+		ESP_LOGI(TAG, "Wi-Fi connected");
 		wifi_status = true;
 		break;
 
 	case IP_EVENT_STA_GOT_IP:
-		ESP_LOGI(TAG, "Wi-Fi got ip\n");
+		ESP_LOGI(TAG, "Wi-Fi got ip");
+		connection_ok = true;
+
 		break;
 
 	case WIFI_EVENT_STA_DISCONNECTED:
@@ -154,13 +92,59 @@ void wifi_init(void) {
 	esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
 	esp_wifi_start();
 }
+/// WIFI END
+
+/// HTTP
+esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
+
+	switch (evt->event_id) {
+	case HTTP_EVENT_ERROR:
+		break;
+	case HTTP_EVENT_ON_CONNECTED:
+		break;
+	case HTTP_EVENT_HEADER_SENT:
+		break;
+	case HTTP_EVENT_ON_HEADER:
+		break;
+	case HTTP_EVENT_ON_DATA:
+		if (!esp_http_client_is_chunked_response(evt->client)) {
+			strncpy(rcv_buffer, (char*) evt->data, evt->data_len);
+		}
+		break;
+	case HTTP_EVENT_ON_FINISH:
+		break;
+	case HTTP_EVENT_DISCONNECTED:
+		break;
+	case HTTP_EVENT_REDIRECT:
+		break;
+	}
+	return ESP_OK;
+}
+/// HTTP END
+
+/// OTA START
+void start_ota_update(char *ota_uri_bin) {
+	ESP_LOGI(TAG, "start_ota_update %s\n", ota_uri_bin);
+
+	esp_http_client_config_t config = { .url = ota_uri_bin, .cert_pem =
+			(char*) OTA_SERVER_ROOT_CA, .skip_cert_common_name_check = false };
+	esp_https_ota_config_t ota_config = { .http_config = &config, };
+
+	esp_err_t ret = esp_https_ota(&ota_config);
+	if (ret == ESP_OK) {
+		printf("OTA OK, restarting...\n");
+		esp_restart();
+	} else {
+		printf("OTA failed...\n");
+	}
+}
 
 char* ota_get_json() {
-	ESP_LOGI(TAG, "ota_get_json\n");
+	ESP_LOGI(TAG, "ota_get_json");
 
 	// configure the esp_http_client
 	esp_http_client_config_t config = { .url = OTA_URI_JSON, .event_handler =
-			_http_event_handler, };
+			_http_event_handler, .cert_pem = (char*) OTA_SERVER_ROOT_CA, };
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 
 	// download json file (fw version and bin uri)
@@ -169,35 +153,78 @@ char* ota_get_json() {
 	if (err == ESP_OK) {
 		cJSON *json = cJSON_Parse(rcv_buffer);
 		if (json == NULL) {
-			ESP_LOGE(TAG, "cannot parse downloaded json file. abort\n");
-			return NULL;
+			ESP_LOGE(TAG, "cannot parse downloaded json file. abort");
 		} else {
 			cJSON *version = cJSON_GetObjectItemCaseSensitive(json, "version");
-			cJSON *file = cJSON_GetObjectItemCaseSensitive(json, "file");
+			cJSON *file = cJSON_GetObjectItemCaseSensitive(json, "uri");
 
 			// check the version
 			if (!cJSON_IsNumber(version)) {
-				ESP_LOGE(TAG, "cannot read version number. abort\n");
-				return NULL;
+				ESP_LOGE(TAG, "cannot read version field. abort");
 			} else {
-				double new_version = version->valuedouble;
+				int new_version = (int) version->valuedouble;
+				ESP_LOGI(TAG, "current fw ver %d, available fw ver %d",
+						FIRMWARE_VERSION, new_version);
+
 				if (new_version > FIRMWARE_VERSION) {
-					ESP_LOGI(TAG,
-							"current firmware version (%.1f) is lower than the available one (%.1f), upgrading...\n",
-							FIRMWARE_VERSION, new_version);
 					if (cJSON_IsString(file) && (file->valuestring != NULL)) {
-						ESP_LOGI(TAG, "firmware uri: %s\n", file->valuestring);
+						ESP_LOGI(TAG, "upgrading. firmware uri: %s",
+								file->valuestring);
+
+						esp_http_client_cleanup(client);
 						return (char*) file->valuestring;
+					} else {
+						ESP_LOGE(TAG, "cannot read uri field. abort");
 					}
+				} else {
+					ESP_LOGI(TAG, "not upgrading. upgrade is not needed.");
 				}
 			}
 		}
+	} else {
+		ESP_LOGE(TAG, "unable to download json filen");
 	}
 
 	esp_http_client_cleanup(client);
-
-	ESP_LOGE(TAG, "unable to download json file\n");
 	return NULL;
+}
+
+static void task_ota(void *pvParameters) {
+	while (!connection_ok) {
+		// wait for connection
+		vTaskDelay(5000 / portTICK_PERIOD_MS);
+	}
+
+	// once got connection, get json file and perform ota if necessary
+	char *ota_uri_bin = ota_get_json();
+	if (ota_uri_bin != NULL)
+		start_ota_update(ota_uri_bin);
+
+	vTaskDelete(NULL);
+}
+/// OTA END
+
+static void initi_web_page_buffer(void) {
+	esp_vfs_spiffs_conf_t conf = { .base_path = "/spiffs", .partition_label =
+	NULL, .max_files = 5, .format_if_mount_failed = true };
+
+	ESP_ERROR_CHECK(esp_vfs_spiffs_register(&conf));
+
+	memset((void*) index_html, 0, sizeof(index_html));
+	struct stat st;
+	if (stat(INDEX_HTML_PATH, &st)) {
+		ESP_LOGE(TAG, "index.html not found");
+		return;
+	}
+
+	FILE *fp = fopen(INDEX_HTML_PATH, "r");
+	if (fread(index_html, st.st_size, 1, fp) == 0) {
+		ESP_LOGE(TAG, "fread failed");
+	}
+
+//	printf("html page:\n");
+//	printf("%s\n", index_html);
+	fclose(fp);
 }
 
 void app_main(void) {
@@ -212,9 +239,5 @@ void app_main(void) {
 	ESP_ERROR_CHECK(ret);
 
 	wifi_init();
-
-	vTaskDelay(5000 / portTICK_PERIOD_MS);
-
-	char* ota_uri_bin = ota_get_json();
-	start_ota_update(ota_uri_bin);
+	xTaskCreate(&task_ota, "task_ota", 8192, NULL, 5, NULL);
 }
